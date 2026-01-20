@@ -9,7 +9,7 @@ from google.oauth2.service_account import Credentials
 
 # LangChain imports
 from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 
 # Get logger
 logger = logging.getLogger("tamu_newsletter")
