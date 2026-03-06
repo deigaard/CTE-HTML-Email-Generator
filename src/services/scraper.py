@@ -240,25 +240,26 @@ class EventScraper:
     
     def _scrape_events_from_url(self, url: str, start_date: date, end_date: date) -> List[Dict[str, Any]]:
         """Scrape events from a specified URL within the date range"""
-        
+
         # Get platform-specific Chrome configuration
         chrome_options, service = self._get_chrome_options_and_service()
-        
+
         # Initialize the driver
         driver = None
         try:
             logger.info("Initializing Chrome driver...")
             driver = webdriver.Chrome(service=service, options=chrome_options)
             logger.info(f"Successfully initialized Chrome driver, loading: {url}")
-            
+
             # Load the page
             driver.get(url)
             logger.info("Page loaded successfully")
-            
+
             # Wait for events to load with better error handling
+            # NEW: Updated selector from "lw_cal_event" to "card"
             try:
                 WebDriverWait(driver, 30).until(
-                    EC.presence_of_element_located((By.CLASS_NAME, "lw_cal_event"))
+                    EC.presence_of_element_located((By.CSS_SELECTOR, ".card.card--inline"))
                 )
                 logger.info("Events container found")
             except TimeoutException:
@@ -268,76 +269,88 @@ class EventScraper:
                 logger.info(f"Page title: {page_title}")
                 # Return empty list instead of failing
                 return []
-            
+
             # Add a small delay
             time.sleep(2)
-            
+
             # Find event elements with error checking
-            event_elements = driver.find_elements(By.CLASS_NAME, "lw_cal_event")
-            
+            # NEW: Updated selector to match new card structure
+            event_elements = driver.find_elements(By.CSS_SELECTOR, ".card.card--inline")
+
             # DEBUG: Check if event_elements is None
             if event_elements is None:
                 logger.error("event_elements is None - this shouldn't happen with Selenium")
                 return []
-            
+
             logger.info(f"Found {len(event_elements)} event elements")
-            
+
             # If no events found, check page content
             if len(event_elements) == 0:
                 logger.warning("No events found on page")
                 # Debug: check page source
                 page_source = driver.page_source
                 logger.info(f"Page source length: {len(page_source) if page_source else 'None'}")
-                if page_source and "lw_cal_event" in page_source:
+                if page_source and "card--inline" in page_source:
                     logger.warning("Events exist in source but not found by selector")
                 return []
-            
+
             # Process events with better error handling
             event_data = []
-            
+
             for i, element in enumerate(event_elements):
                 try:
                     logger.info(f"Processing event {i+1}/{len(event_elements)}")
-                    
+
                     # Extract event details with None checks
-                    title_elements = element.find_elements(By.CSS_SELECTOR, "h4 a")
+                    # NEW: Updated selector from "h4 a" to ".heading-group h3 a"
+                    title_elements = element.find_elements(By.CSS_SELECTOR, ".heading-group h3 a")
                     if not title_elements:
                         logger.warning(f"No title found for event {i+1}")
                         continue
-                    
+
                     title_element = title_elements[0]
                     event_name = title_element.text
                     event_link = title_element.get_attribute("href")
-                    
+
                     if not event_name:
                         logger.warning(f"Empty event name for event {i+1}")
                         continue
-                    
-                    # Get date/time with None check
-                    date_time_elements = element.find_elements(By.CLASS_NAME, "date-time")
-                    if date_time_elements:
-                        date_time = date_time_elements[0].text
-                        if date_time:  # Check if not None/empty
-                            event_date = date_time.split("·")[0].strip() if "·" in date_time else date_time
-                            event_time = date_time.split("·")[1].strip() if "·" in date_time else ""
-                        else:
-                            logger.warning(f"Empty date_time for event: {event_name}")
-                            event_date = ""
-                            event_time = ""
-                    else:
-                        logger.warning(f"No date-time element for event: {event_name}")
+
+                    # Get date/time and location from icon-list
+                    # NEW: Parse from icon-list structure instead of separate elements
+                    event_date = ""
+                    event_time = ""
+                    location = ""
+
+                    icon_list_items = element.find_elements(By.CSS_SELECTOR, ".icon-list li")
+                    if icon_list_items:
+                        # First li contains date/time: "Day, Month DD, YYYY • HH:MMam - HH:MMam TZ"
+                        if len(icon_list_items) > 0:
+                            date_time_text = icon_list_items[0].text
+                            if date_time_text:
+                                # Parse date and time from new format
+                                # Format: "Monday, February 16, 2026 • 11:00am - 11:45am CST"
+                                if "•" in date_time_text:
+                                    parts = date_time_text.split("•")
+                                    event_date = parts[0].strip()
+                                    event_time = parts[1].strip() if len(parts) > 1 else ""
+                                else:
+                                    event_date = date_time_text
+                                    event_time = ""
+
+                        # Second li contains location
+                        if len(icon_list_items) > 1:
+                            location = icon_list_items[1].text.strip()
+
+                    if not event_date:
+                        logger.warning(f"No date found for event: {event_name}")
                         event_date = ""
-                        event_time = ""
-                    
+
                     # Check if event is within date range
                     if event_date and not self._is_within_date_range(event_date, start_date, end_date):
                         logger.info(f"Event outside date range: {event_name}")
                         continue
-                    
-                    # Get location with None check
-                    location_elements = element.find_elements(By.CLASS_NAME, "map-marker")
-                    location = location_elements[0].text if location_elements and location_elements[0].text else ""
-                    
+
                     # Create event object
                     event = {
                         "event_name": event_name,
@@ -349,19 +362,19 @@ class EventScraper:
                         "event_registration_link": "",
                         "event_description": ""
                     }
-                    
+
                     event_data.append(event)
                     logger.info(f"Successfully processed: {event_name}")
-                    
+
                 except (StaleElementReferenceException, NoSuchElementException) as e:
                     logger.warning(f"Element error for event {i+1}: {str(e)}")
                     continue
                 except Exception as e:
                     logger.error(f"Unexpected error processing event {i+1}: {str(e)}")
                     continue
-            
+
             logger.info(f"Successfully processed {len(event_data)} events")
-            
+
             # Get additional details for each event
             for i, event in enumerate(event_data):
                 try:
@@ -370,13 +383,13 @@ class EventScraper:
                 except Exception as e:
                     logger.warning(f"Error getting details for {event['event_name']}: {str(e)}")
                     # Continue with basic event data
-            
+
             return event_data
-            
+
         except Exception as e:
             logger.error(f"Error in _scrape_events_from_url: {str(e)}")
             raise Exception(f"Failed to scrape events: {str(e)}")
-            
+
         finally:
             # Always close the driver
             if driver:
@@ -393,84 +406,63 @@ class EventScraper:
             if not event_link:
                 logger.warning("No event link provided")
                 return event
-                
+
             logger.info(f"Navigating to: {event_link}")
             driver.get(event_link)
-            
+
             # Wait for the page to load
             WebDriverWait(driver, 20).until(
                 EC.presence_of_element_located((By.TAG_NAME, "body"))
             )
-            
+
             # Add a small delay
             time.sleep(1)
-            
+
             # Get registration link if available
+            # NEW: Updated to use a[href*='register'] instead of .lw_join_online
             try:
-                reg_elements = driver.find_elements(By.CLASS_NAME, "lw_join_online")
+                reg_elements = driver.find_elements(By.CSS_SELECTOR, "a[href*='register']")
                 if reg_elements:
-                    reg_element = reg_elements[0]
-                    reg_link = reg_element.get_attribute("href")
+                    reg_link = reg_elements[0].get_attribute("href")
                     if reg_link:
                         event["event_registration_link"] = reg_link
+                        logger.info(f"Found registration link: {reg_link}")
             except Exception as e:
                 logger.warning(f"Error getting registration link: {e}")
-            
-            # Method 1: Try to get from the intro div
+
+            # Get body text for parsing facilitator and description
+            # NEW: The new site structure requires parsing from body text
             try:
-                intro_elements = driver.find_elements(By.CLASS_NAME, "intro")
-                if intro_elements:
-                    intro_div = intro_elements[0]
-                    intro_text = intro_div.text
-                    
-                    if intro_text:  # Check if not None/empty
-                        # Parse facilitator
-                        facilitator_match = re.search(r'Facilitator[s]?:\s*(.*?)(?:\s*Description:|$)', intro_text, re.DOTALL)
-                        if facilitator_match:
-                            event["event_facilitators"] = facilitator_match.group(1).strip()
-                        
-                        # Parse description (from intro)
-                        description_match = re.search(r'Description:\s*(.*?)$', intro_text, re.DOTALL)
-                        if description_match:
-                            event["event_description"] = description_match.group(1).strip()
+                body_element = driver.find_element(By.TAG_NAME, "body")
+                page_content = body_element.text if body_element else ""
+
+                if page_content:
+                    # Parse facilitator
+                    # Look for patterns like "Facilitator: Name, Title"
+                    facilitator_patterns = [
+                        r'Facilitator[s]?:\s*([^\n]+?)(?:\s*Description:|$)',
+                        r'Presenter[s]?:\s*([^\n]+?)(?:\s*Description:|$)',
+                        r'Instructor[s]?:\s*([^\n]+?)(?:\s*Description:|$)'
+                    ]
+
+                    for pattern in facilitator_patterns:
+                        match = re.search(pattern, page_content, re.MULTILINE)
+                        if match:
+                            event["event_facilitators"] = match.group(1).strip()
+                            logger.info(f"Found facilitator: {event['event_facilitators']}")
+                            break
+
+                    # Parse description
+                    # Look for "Description: ..." pattern
+                    description_match = re.search(r'Description:\s*(.+?)(?:\n\n|\Z)', page_content, re.DOTALL)
+                    if description_match:
+                        event["event_description"] = description_match.group(1).strip()
+                        logger.info(f"Found description (length: {len(event['event_description'])})")
+
             except Exception as e:
-                logger.warning(f"Error parsing intro div: {e}")
-            
-            # Method 2: Try to get description from lw_calendar_event_description
-            if not event.get("event_description"):
-                try:
-                    desc_elements = driver.find_elements(By.CLASS_NAME, "lw_calendar_event_description")
-                    if desc_elements:
-                        description_div = desc_elements[0]
-                        desc_text = description_div.text
-                        if desc_text:  # Check if not None/empty
-                            event["event_description"] = desc_text.strip()
-                except Exception as e:
-                    logger.warning(f"Error getting description: {e}")
-            
-            # Method 3: If facilitator is still empty, try alternative parsing
-            if not event.get("event_facilitators"):
-                try:
-                    body_element = driver.find_element(By.TAG_NAME, "body")
-                    page_content = body_element.text if body_element else ""
-                    
-                    if page_content:  # Check if not None/empty
-                        # Look for typical facilitator patterns
-                        facilitator_patterns = [
-                            r'Facilitator[s]?:\s*(.*?)(?:\n|Description:)',
-                            r'Presenter[s]?:\s*(.*?)(?:\n|Description:)',
-                            r'Instructor[s]?:\s*(.*?)(?:\n|Description:)'
-                        ]
-                        
-                        for pattern in facilitator_patterns:
-                            match = re.search(pattern, page_content, re.DOTALL)
-                            if match:
-                                event["event_facilitators"] = match.group(1).strip()
-                                break
-                except Exception as e:
-                    logger.warning(f"Error in alternative facilitator parsing: {e}")
-                    
+                logger.warning(f"Error parsing body content: {e}")
+
         except Exception as e:
             logger.warning(f"Error getting details for {event.get('event_name', 'unknown')}: {str(e)}")
-        
+
         return event
