@@ -2,7 +2,6 @@ chromium
 chromium-driver
 xvfb
 libnss3
-libgconf-2-4
 libxss1
 libxtst6
 libxrandr2
